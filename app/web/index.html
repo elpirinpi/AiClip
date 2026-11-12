@@ -21,6 +21,13 @@
     </header>
 
     <main>
+      <section id="updateNotice" class="update-notice hidden" role="status" aria-live="polite">
+        <div>
+          <strong id="updateHeading"></strong>
+          <p id="updateMessage"></p>
+        </div>
+        <a id="updateDownload" class="button button-primary" href="#" target="_blank" rel="noopener noreferrer"></a>
+      </section>
       <section id="homeScreen">
         <div class="page-heading">
           <div>
@@ -129,6 +136,16 @@
             <button class="button button-primary" type="submit">Guardar ajustes <span aria-hidden="true">→</span></button>
           </div>
         </form>
+        <section class="panel update-panel" aria-labelledby="updateHeadingSettings">
+          <div class="section-title">
+            <div class="step-number">03</div>
+            <div>
+              <h2 id="updateHeadingSettings">Actualizaciones</h2>
+              <p class="muted" id="updateStatus" aria-live="polite">Comprobando versión…</p>
+            </div>
+          </div>
+          <button class="button button-quiet" id="checkUpdates" type="button">Comprobar actualizaciones</button>
+        </section>
       </section>
 
       <section id="detailScreen" class="hidden">
@@ -169,6 +186,11 @@
         </div>
       </section>
     </main>
+    <footer class="app-footer">
+      <span>Desarrollador: Kelly Benjamin de la Cruz</span>
+      <span aria-hidden="true">·</span>
+      <span>Colaborador: Luis Felipe</span>
+    </footer>
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
     <script src="/web/app.js" defer></script>
   </body>

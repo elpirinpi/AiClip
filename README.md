@@ -36,6 +36,10 @@ FFmpeg se incluye en las compilaciones de Windows. La aceleración NVENC se dete
 
 La primera ejecución de la aplicación empaquetada crea una configuración sin claves en `%LOCALAPPDATA%\AiClip`. Introduce tus claves en **Ajustes**. Las claves y los datos de la aplicación se guardan en ese PC y no se incluyen en el repositorio ni en las compilaciones.
 
+Al iniciar, AiClip consulta los releases públicos de GitHub para avisar si hay una nueva versión. Esta consulta no envía vídeos ni claves de API. El enlace descarga el instalador MSI; debes abrirlo e iniciar la instalación manualmente.
+
+YouTube puede limitar temporalmente las solicitudes y mostrar un error HTTP 429 o pedir una verificación. En ese caso, inténtalo más tarde o selecciona el vídeo como archivo local; AiClip no utiliza las cookies del navegador.
+
 ## Privacidad y derechos
 
 El vídeo permanece en el PC. Solo se envían a Groq fragmentos de audio mono de 16 kHz para transcribirlos y a Google Gemini el texto de la transcripción para proponer clips y títulos. Se requiere confirmación en la aplicación antes de iniciar un trabajo. Cada usuario es responsable de tener los derechos necesarios para procesar el contenido.
@@ -50,7 +54,7 @@ Con Python 3.11, FFmpeg estático (incluidos `ffmpeg.exe` y `ffprobe.exe`) y WiX
 
 ```powershell
 python -m pip install -r requirements.txt
-python scripts/build_windows.py
+python -m scripts.build_windows
 ```
 
 Los artefactos se generan en `dist\AiClip.exe`, `dist\FFmpeg-LICENSE.txt` y `dist\AiClip-Setup.msi`. Las compilaciones usan FFmpeg GPL de [BtbN](https://github.com/BtbN/FFmpeg-Builds); consulta sus avisos de licencia y las condiciones de redistribución de FFmpeg antes de redistribuir un paquete.

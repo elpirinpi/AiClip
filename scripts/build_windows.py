@@ -5,11 +5,13 @@ import sys
 from pathlib import Path
 from xml.etree import ElementTree
 
+from app.version import __version__
+
 
 ROOT = Path(__file__).resolve().parents[1]
 DIST_DIR = ROOT / "dist"
 APP_NAME = "AiClip"
-VERSION = "0.1.0"
+VERSION = __version__
 UPGRADE_CODE = "85DF2B20-1095-4A82-AB2E-66BC0C159F3E"
 WIX_NAMESPACE = "http://wixtoolset.org/schemas/v4/wxs"
 ElementTree.register_namespace("", WIX_NAMESPACE)

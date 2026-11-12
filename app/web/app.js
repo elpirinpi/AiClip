@@ -5,6 +5,7 @@ const detailScreen = $("#detailScreen");
 let activeJobId = null;
 let jobsTimer = null;
 let toastTimer = null;
+let updateCheckInProgress = false;
 
 const STATUS_LABELS = {
   queued: "En cola",
@@ -171,6 +172,42 @@ async function loadSettings() {
   $("#groqStatus").textContent = settings.groq_key_configured ? "Configurada · clave oculta" : "Falta configurar";
   $("#geminiStatus").textContent = settings.gemini_key_configured ? "Configurada · clave oculta" : "Falta configurar";
 }
+
+async function checkForUpdates(showErrors = false) {
+  if (updateCheckInProgress) return;
+  updateCheckInProgress = true;
+  const button = $("#checkUpdates");
+  const status = $("#updateStatus");
+  button.disabled = true;
+  status.textContent = "Comprobando versión…";
+  try {
+    const update = await api("/api/updates");
+    if (update.update_available) {
+      status.textContent = `Nueva versión disponible: ${update.latest_version}.`;
+      $("#updateHeading").textContent = `AiClip ${update.latest_version} ya está disponible.`;
+      $("#updateMessage").textContent = update.installer_available
+        ? "Descarga el instalador para actualizar. La instalación se inicia manualmente."
+        : "Consulta la página del release para ver las descargas disponibles.";
+      $("#updateDownload").href = update.download_url;
+      $("#updateDownload").textContent = update.installer_available
+        ? "Descargar instalador"
+        : "Ver release";
+      $("#updateNotice").classList.remove("hidden");
+    } else {
+      status.textContent = `Tienes la versión más reciente (${update.current_version}).`;
+      $("#updateNotice").classList.add("hidden");
+    }
+  } catch (error) {
+    status.textContent = error.message;
+    $("#updateNotice").classList.add("hidden");
+    if (showErrors) toast(error.message, true);
+  } finally {
+    button.disabled = false;
+    updateCheckInProgress = false;
+  }
+}
+
+$("#checkUpdates").addEventListener("click", () => checkForUpdates(true));
 
 $("#settingsForm").addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -356,3 +393,4 @@ $("#downloadSelected").addEventListener("click", () => {
 
 loadJobs().catch((error) => toast(error.message, true));
 updateConsent();
+checkForUpdates();

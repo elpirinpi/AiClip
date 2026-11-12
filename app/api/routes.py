@@ -42,6 +42,7 @@ from app.pipeline.transcribe import transcribe_chunks
 from app.providers.base import ProviderError
 from app.providers.gemini_llm import create_analyzer
 from app.providers.groq_stt import create_transcriber
+from app.updates import UpdateCheckError, check_for_updates
 
 
 logger = logging.getLogger(__name__)
@@ -280,6 +281,14 @@ def recover_jobs() -> None:
 @router.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@router.get("/updates")
+def read_updates() -> dict[str, object]:
+    try:
+        return check_for_updates()
+    except UpdateCheckError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @router.get("/settings")

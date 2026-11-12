@@ -40,6 +40,11 @@ p { line-height: 1.55; }
 .notice-icon { flex: 0 0 21px; width: 21px; height: 21px; display: grid; place-items: center; border: 1px solid var(--purple); border-radius: 50%; color: var(--purple); font-size: 12px; font-weight: 700; }
 .notice strong { font-size: 12px; }
 .notice p { color: #c4bfd4; font-size: 11px; margin: 5px 0 0; }
+.update-notice { display: flex; justify-content: space-between; align-items: center; gap: 16px; border: 1px solid #35604c; border-radius: 12px; background: #192a24; padding: 15px 17px; margin-bottom: 20px; }
+.update-notice strong { font-size: 12px; }
+.update-notice p { color: #b6d2c4; font-size: 11px; margin: 5px 0 0; }
+.update-panel { max-width: 700px; margin-top: 20px; }
+.update-panel .section-title { margin-bottom: 12px; }
 .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 23px; }
 .section-title { display: flex; gap: 13px; align-items: flex-start; margin-bottom: 23px; }
 .step-number { width: 28px; height: 28px; border: 1px solid #504379; color: var(--purple); border-radius: 8px; display: grid; place-items: center; font-size: 11px; font-weight: 800; flex: 0 0 auto; }
@@ -122,6 +127,7 @@ input::placeholder { color: #737b8e; }
 .toast { position: fixed; bottom: 20px; left: 50%; transform: translate(-50%, 15px); opacity: 0; pointer-events: none; padding: 11px 15px; background: #303448; border: 1px solid #555d72; border-radius: 9px; font-size: 11px; transition: .2s ease; max-width: min(500px, calc(100vw - 30px)); z-index: 3; }
 .toast.visible { opacity: 1; transform: translate(-50%, 0); }
 .toast.error { border-color: #734448; color: #ffc0c0; }
+.app-footer { display: flex; justify-content: center; flex-wrap: wrap; gap: 7px; padding: 18px 24px 24px; border-top: 1px solid var(--line); color: var(--muted); font-size: 10px; text-align: center; }
 @media (max-width: 680px) {
   .topbar { height: 62px; padding: 0 17px; gap: 20px; }
   .local-badge { font-size: 0; gap: 0; }
@@ -141,4 +147,5 @@ input::placeholder { color: #737b8e; }
   .clip-preview { margin-left: 0; }
   .form-actions { align-items: flex-start; flex-direction: column; }
   .form-actions .button { align-self: stretch; }
+  .update-notice { align-items: stretch; flex-direction: column; }
 }

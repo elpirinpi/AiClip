@@ -33,9 +33,7 @@ def resolve_video_source(source: str, work_dir: Path) -> Path:
             info = downloader.extract_info(source, download=True)
             filename = Path(downloader.prepare_filename(info))
     except DownloadError as exc:
-        raise IngestError(
-            "No se pudo descargar el vídeo de YouTube. Comprueba el enlace y su disponibilidad."
-        ) from exc
+        raise IngestError(_youtube_download_error_message(exc)) from exc
     except OSError as exc:
         if getattr(exc, "errno", None) == 28:
             raise IngestError(
@@ -49,6 +47,36 @@ def resolve_video_source(source: str, work_dir: Path) -> Path:
             raise IngestError("YouTube no entregó un archivo de vídeo utilizable.")
         filename = candidates[0]
     return filename
+
+
+def _youtube_download_error_message(error: DownloadError) -> str:
+    details = str(error).casefold()
+    if (
+        "confirm you're not a bot" in details
+        or "confirm you’re not a bot" in details
+        or "http error 429" in details
+        or "too many requests" in details
+    ):
+        return (
+            "YouTube está limitando las solicitudes y pide verificar que no eres "
+            "un bot (HTTP 429). Prueba más tarde o selecciona el vídeo como "
+            "archivo local. AiClip no usa las cookies del navegador."
+        )
+    if "sign in" in details or "login_required" in details:
+        return (
+            "YouTube requiere iniciar sesión para ver este vídeo. AiClip no puede "
+            "acceder a vídeos que requieren una cuenta; selecciona un archivo "
+            "local si tienes derecho a procesarlo."
+        )
+    if "private video" in details or "this video is private" in details:
+        return (
+            "Este vídeo de YouTube es privado y no se puede descargar desde "
+            "AiClip. Selecciona un archivo local si tienes derecho a procesarlo."
+        )
+    return (
+        "No se pudo descargar el vídeo de YouTube. Comprueba que el enlace sea "
+        "válido, que el vídeo esté disponible y vuelve a intentarlo."
+    )
 
 
 def is_youtube_url(source: str) -> bool:

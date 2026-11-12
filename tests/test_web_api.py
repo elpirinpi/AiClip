@@ -42,7 +42,27 @@ def test_web_home_and_health_expose_consent_warning(tmp_path: Path, monkeypatch)
     assert home.status_code == 200
     assert "El audio se envía a Groq" in home.text
     assert "eres responsable de tener derecho a procesar el contenido" in home.text
+    assert "Desarrollador: Kelly Benjamin de la Cruz" in home.text
+    assert "Colaborador: Luis Felipe" in home.text
     assert health.json() == {"status": "ok"}
+
+
+def test_updates_endpoint_returns_release_check_result(monkeypatch) -> None:
+    result = {
+        "current_version": "0.1.0",
+        "latest_version": "0.2.0",
+        "update_available": True,
+        "release_url": "https://github.com/elpirinpi/AiClip/releases/tag/v0.2.0",
+        "download_url": "https://github.com/elpirinpi/AiClip/releases/download/v0.2.0/AiClip-Setup.msi",
+        "installer_available": True,
+    }
+    monkeypatch.setattr(routes, "check_for_updates", lambda: result)
+
+    with TestClient(app, client=("127.0.0.1", 12345)) as client:
+        response = client.get("/api/updates")
+
+    assert response.status_code == 200
+    assert response.json() == result
 
 
 def test_settings_api_never_returns_keys_and_preserves_blank_inputs(
