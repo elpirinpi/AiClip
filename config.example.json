@@ -1,0 +1,12 @@
+{
+  "groq_api_key": "",
+  "gemini_api_key": "",
+  "ffmpeg_path": "ffmpeg",
+  "output_folder": "output",
+  "transcription_model": "whisper-large-v3-turbo",
+  "analysis_model": "gemini-2.5-flash",
+  "subtitle_style": "classic",
+  "reframe_mode": "center",
+  "transcription_fallback": null,
+  "analysis_fallback": null
+}

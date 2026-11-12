@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#11131a">
+    <title>AiClip — clips de vídeo</title>
+    <link rel="stylesheet" href="/web/styles.css">
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="AiClip, inicio">
+        <span class="brand-mark">A</span>
+        <span>Ai<span class="brand-accent">Clip</span></span>
+      </a>
+      <nav class="tabs" aria-label="Navegación principal">
+        <button class="tab active" id="homeTab" type="button">Proyectos</button>
+        <button class="tab" id="settingsTab" type="button">Ajustes</button>
+      </nav>
+      <span class="local-badge"><span></span> Procesamiento local</span>
+    </header>
+
+    <main>
+      <section id="homeScreen">
+        <div class="page-heading">
+          <div>
+            <p class="eyebrow">TU ESTUDIO DE CLIPS</p>
+            <h1>De vídeo largo a <span>momentos memorables.</span></h1>
+            <p class="muted">Transcribe, encuentra los mejores momentos y expórtalos en vertical.</p>
+          </div>
+        </div>
+
+        <section class="notice" role="note">
+          <span class="notice-icon" aria-hidden="true">i</span>
+          <div>
+            <strong>Antes de empezar: información importante</strong>
+            <p>El audio se envía a Groq para transcribirlo y la transcripción se envía a Google Gemini para analizarla y proponer textos. El vídeo se procesa localmente y no se sube a esos servicios. Tú eres responsable de tener derecho a procesar el contenido.</p>
+          </div>
+        </section>
+
+        <section class="panel source-panel" aria-labelledby="sourceHeading">
+          <div class="section-title">
+            <div class="step-number">01</div>
+            <div>
+              <h2 id="sourceHeading">Añade un vídeo</h2>
+              <p class="muted">Pega un enlace de YouTube o selecciona un archivo de tu PC.</p>
+            </div>
+          </div>
+          <form id="jobForm">
+            <label class="field-label" for="videoUrl">Enlace de YouTube</label>
+            <div class="url-input">
+              <span aria-hidden="true">↗</span>
+              <input id="videoUrl" name="source" type="url" placeholder="https://www.youtube.com/watch?v=…" autocomplete="url">
+            </div>
+            <div class="divider"><span>o elige un archivo</span></div>
+            <label class="dropzone" for="videoFile" id="dropzone">
+              <span class="upload-icon" aria-hidden="true">↑</span>
+              <span class="drop-title" id="fileName">Arrastra tu vídeo aquí</span>
+              <span class="drop-help">o haz clic para buscar en tu PC · MP4, MOV, MKV, WEBM, AVI o M4V</span>
+              <input id="videoFile" name="video" type="file" accept=".mp4,.mov,.mkv,.webm,.avi,.m4v,video/*">
+            </label>
+            <label class="consent-row">
+              <input id="consent" type="checkbox">
+              <span>Entiendo que el audio y el texto se envían a terceros como se describe arriba, y confirmo que tengo derecho a procesar este contenido.</span>
+            </label>
+            <div class="form-actions">
+              <span class="muted small">La cola procesa un trabajo a la vez.</span>
+              <button class="button button-primary" id="submitJob" type="submit" disabled>
+                <span>Analizar vídeo</span><span aria-hidden="true">→</span>
+              </button>
+            </div>
+          </form>
+        </section>
+
+        <section class="jobs-section">
+          <div class="jobs-heading">
+            <div>
+              <p class="eyebrow">BIBLIOTECA</p>
+              <h2>Proyectos recientes</h2>
+            </div>
+            <button class="button button-quiet" id="refreshJobs" type="button">Actualizar</button>
+          </div>
+          <div id="jobsList" class="jobs-list">
+            <div class="empty-state">Todavía no hay proyectos. Añade un vídeo para comenzar.</div>
+          </div>
+        </section>
+      </section>
+
+      <section id="settingsScreen" class="hidden">
+        <div class="page-heading">
+          <div>
+            <p class="eyebrow">PREFERENCIAS</p>
+            <h1>Ajustes de <span>AiClip.</span></h1>
+            <p class="muted">Tus claves se guardan solo en este PC y nunca se muestran en pantalla.</p>
+          </div>
+        </div>
+        <form id="settingsForm" class="panel settings-panel">
+          <div class="section-title">
+            <div class="step-number">01</div>
+            <div><h2>Proveedores de IA</h2><p class="muted">Usa tus propias claves de API.</p></div>
+          </div>
+          <label class="field-label" for="groqKey">Clave de Groq <span class="key-status" id="groqStatus"></span></label>
+          <input class="text-input" id="groqKey" type="password" autocomplete="new-password" placeholder="Deja vacío para conservar la clave guardada">
+          <label class="field-label" for="geminiKey">Clave de Google Gemini <span class="key-status" id="geminiStatus"></span></label>
+          <input class="text-input" id="geminiKey" type="password" autocomplete="new-password" placeholder="Deja vacío para conservar la clave guardada">
+          <div class="section-title section-title-spaced">
+            <div class="step-number">02</div>
+            <div><h2>Exportación</h2><p class="muted">Elige la carpeta y el aspecto predeterminado.</p></div>
+          </div>
+          <label class="field-label" for="outputFolder">Carpeta de salida</label>
+          <input class="text-input" id="outputFolder" type="text" spellcheck="false">
+          <div class="settings-grid">
+            <label><span class="field-label">Estilo de subtítulos</span>
+              <select id="subtitleStyle" class="text-input">
+                <option value="classic">Clásico</option>
+                <option value="impact">Impactante</option>
+              </select>
+            </label>
+            <label><span class="field-label">Encuadre vertical</span>
+              <select id="reframeMode" class="text-input">
+                <option value="center">Centrado</option>
+                <option value="face">Seguimiento de cara</option>
+                <option value="blur">Fondo desenfocado</option>
+              </select>
+            </label>
+          </div>
+          <div class="form-actions">
+            <span class="muted small" id="settingsStatus"></span>
+            <button class="button button-primary" type="submit">Guardar ajustes <span aria-hidden="true">→</span></button>
+          </div>
+        </form>
+      </section>
+
+      <section id="detailScreen" class="hidden">
+        <div class="detail-heading">
+          <button class="button button-quiet" id="backHome" type="button">← Proyectos</button>
+          <div class="detail-title">
+            <p class="eyebrow">PROYECTO</p>
+            <h1 id="detailName">Vídeo</h1>
+            <p class="muted" id="detailStatus"></p>
+          </div>
+          <button class="button button-primary" id="renderSelected" type="button" disabled>
+            Exportar seleccionados <span aria-hidden="true">→</span>
+          </button>
+        </div>
+        <div id="jobProgress" class="progress-panel hidden">
+          <div class="progress-meta"><span id="progressLabel">En la cola</span><span id="progressValue">0%</span></div>
+          <div class="progress-track"><div id="progressBar"></div></div>
+          <p id="jobError" class="error-text hidden"></p>
+        </div>
+        <div class="clip-toolbar">
+          <label class="select-all"><input id="selectAll" type="checkbox"> Seleccionar todos</label>
+          <span class="muted small" id="clipCount"></span>
+          <button class="button button-quiet" id="downloadSelected" type="button" disabled>Descargar seleccionados ↓</button>
+        </div>
+        <div id="clipsList" class="clips-list"></div>
+        <form id="manualClipForm" class="panel manual-clip hidden">
+          <h2>Crear un clip manual</h2>
+          <div class="settings-grid">
+            <label><span class="field-label">Inicio (segundos)</span><input class="text-input" id="manualStart" type="number" min="0" step="0.1" required></label>
+            <label><span class="field-label">Fin (segundos)</span><input class="text-input" id="manualEnd" type="number" min="0" step="0.1" required></label>
+          </div>
+          <label class="field-label" for="manualTitle">Título</label>
+          <input class="text-input" id="manualTitle" maxlength="120" required>
+          <button class="button button-secondary" type="submit">Añadir clip</button>
+        </form>
+        <div class="download-row hidden" id="downloadRow">
+          <a class="button button-primary" id="downloadLink" href="#">Descargar ZIP con clips y miniaturas <span aria-hidden="true">↓</span></a>
+        </div>
+      </section>
+    </main>
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <script src="/web/app.js" defer></script>
+  </body>
+</html>
