@@ -41,7 +41,7 @@
           <span class="notice-icon" aria-hidden="true">i</span>
           <div>
             <strong>Antes de empezar: información importante</strong>
-            <p>El audio se envía a Groq para transcribirlo y la transcripción se envía a Google Gemini para analizarla y proponer textos. El vídeo se procesa localmente y no se sube a esos servicios. Tú eres responsable de tener derecho a procesar el contenido.</p>
+            <p>El audio y el texto de la transcripción se envían a Groq para transcribir y proponer clips y textos. El vídeo se procesa localmente y no se sube a ese servicio. Tú eres responsable de tener derecho a procesar el contenido.</p>
           </div>
         </section>
 
@@ -57,7 +57,7 @@
             <label class="field-label" for="videoUrl">Enlace de YouTube</label>
             <div class="url-input">
               <span aria-hidden="true">↗</span>
-              <input id="videoUrl" name="source" type="url" placeholder="https://www.youtube.com/watch?v=…" autocomplete="url">
+              <input id="videoUrl" name="source" type="text" inputmode="url" autocapitalize="none" spellcheck="false" placeholder="https://www.youtube.com/watch?v=… o youtu.be/…" autocomplete="url">
             </div>
             <div class="divider"><span>o elige un archivo</span></div>
             <label class="dropzone" for="videoFile" id="dropzone">
@@ -85,7 +85,10 @@
               <p class="eyebrow">BIBLIOTECA</p>
               <h2>Proyectos recientes</h2>
             </div>
-            <button class="button button-quiet" id="refreshJobs" type="button">Actualizar</button>
+            <div class="jobs-actions">
+              <button class="button button-quiet" id="clearHistory" type="button" disabled>Limpiar historial</button>
+              <button class="button button-quiet" id="refreshJobs" type="button">Actualizar</button>
+            </div>
           </div>
           <div id="jobsList" class="jobs-list">
             <div class="empty-state">Todavía no hay proyectos. Añade un vídeo para comenzar.</div>
@@ -106,10 +109,8 @@
             <div class="step-number">01</div>
             <div><h2>Proveedores de IA</h2><p class="muted">Usa tus propias claves de API.</p></div>
           </div>
-          <label class="field-label" for="groqKey">Clave de Groq <span class="key-status" id="groqStatus"></span></label>
+          <label class="field-label" for="groqKey">Clave de Groq (transcripción y análisis) <span class="key-status" id="groqStatus"></span></label>
           <input class="text-input" id="groqKey" type="password" autocomplete="new-password" placeholder="Deja vacío para conservar la clave guardada">
-          <label class="field-label" for="geminiKey">Clave de Google Gemini <span class="key-status" id="geminiStatus"></span></label>
-          <input class="text-input" id="geminiKey" type="password" autocomplete="new-password" placeholder="Deja vacío para conservar la clave guardada">
           <div class="section-title section-title-spaced">
             <div class="step-number">02</div>
             <div><h2>Exportación</h2><p class="muted">Elige la carpeta y el aspecto predeterminado.</p></div>
@@ -129,6 +130,7 @@
                 <option value="face">Seguimiento de cara</option>
                 <option value="blur">Fondo desenfocado</option>
               </select>
+              <small class="muted settings-help">El seguimiento se aplica al exportar. Si no se detecta un rostro estable o aparecen varias personas, se usa fondo desenfocado.</small>
             </label>
           </div>
           <div class="form-actions">
@@ -156,6 +158,7 @@
             <h1 id="detailName">Vídeo</h1>
             <p class="muted" id="detailStatus"></p>
           </div>
+          <button class="button button-quiet hidden" id="saveSourceVideo" type="button">Guardar vídeo original ↓</button>
           <button class="button button-primary" id="renderSelected" type="button" disabled>
             Exportar seleccionados <span aria-hidden="true">→</span>
           </button>
@@ -164,6 +167,7 @@
           <div class="progress-meta"><span id="progressLabel">En la cola</span><span id="progressValue">0%</span></div>
           <div class="progress-track"><div id="progressBar"></div></div>
           <p id="jobError" class="error-text hidden"></p>
+          <button class="button button-secondary hidden" id="retryJob" type="button">Reintentar análisis</button>
         </div>
         <div class="clip-toolbar">
           <label class="select-all"><input id="selectAll" type="checkbox"> Seleccionar todos</label>

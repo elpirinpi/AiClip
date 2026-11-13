@@ -8,8 +8,7 @@ from app.config import ConfigError, load_config
 from app.pipeline.segment import Clip
 from app.pipeline.thumbnail import generate_thumbnail_text
 from app.providers.base import TranscriptWord
-from app.providers.gemini_llm import create_analyzer
-from app.providers.gemini_llm import create_analyzer
+from app.providers.groq_llm import create_analyzer
 from app.providers.groq_stt import create_transcriber
 
 
@@ -40,13 +39,13 @@ def test_groq_returns_per_word_timestamps() -> None:
     assert all(word.text and word.start >= 0 and word.end >= word.start for word in words)
 
 
-def test_gemini_returns_a_json_clip_list() -> None:
+def test_groq_returns_a_json_clip_list() -> None:
     config = _integration_config()
-    if not config.gemini_api_key:
-        pytest.skip("Falta gemini_api_key.")
+    if not config.groq_api_key:
+        pytest.skip("Falta groq_api_key.")
     prompt = (
-        "Devuelve únicamente JSON válido con una lista de clips. "
-        "Para esta prueba devuelve [] sin más texto."
+        'Devuelve únicamente {"clips": []} como objeto JSON válido. '
+        "No incluyas texto adicional."
     )
 
     analyzer = create_analyzer(config)
@@ -55,13 +54,15 @@ def test_gemini_returns_a_json_clip_list() -> None:
     finally:
         analyzer.close()
 
-    assert isinstance(json.loads(response), list)
+    payload = json.loads(response)
+    assert isinstance(payload, dict)
+    assert isinstance(payload.get("clips"), list)
 
 
-def test_gemini_generates_thumbnail_text_with_at_most_five_words() -> None:
+def test_groq_generates_thumbnail_text_with_at_most_five_words() -> None:
     config = _integration_config()
-    if not config.gemini_api_key:
-        pytest.skip("Falta gemini_api_key.")
+    if not config.groq_api_key:
+        pytest.skip("Falta groq_api_key.")
 
     analyzer = create_analyzer(load_config())
     try:

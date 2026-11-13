@@ -5,7 +5,7 @@ AiClip convierte vídeos y enlaces de YouTube en clips verticales con subtítulo
 ## Requisitos
 
 - Windows 10 u 11 de 64 bits.
-- Claves propias para [Groq](https://console.groq.com/keys) y [Google AI Studio](https://aistudio.google.com/apikey).
+- Una clave propia de [Groq](https://console.groq.com/keys), utilizada para transcripción, análisis de momentos y textos de miniaturas.
 - Conexión a Internet para analizar vídeos con los proveedores.
 
 FFmpeg se incluye en las compilaciones de Windows. La aceleración NVENC se detecta automáticamente; si no está disponible, se usa x264 en CPU.
@@ -36,13 +36,23 @@ FFmpeg se incluye en las compilaciones de Windows. La aceleración NVENC se dete
 
 La primera ejecución de la aplicación empaquetada crea una configuración sin claves en `%LOCALAPPDATA%\AiClip`. Introduce tus claves en **Ajustes**. Las claves y los datos de la aplicación se guardan en ese PC y no se incluyen en el repositorio ni en las compilaciones.
 
+Al terminar el análisis, cada clip muestra una vista previa del tramo original. Los enlaces completos, cortos (`youtu.be`), de Shorts y los enlaces de YouTube sin protocolo se aceptan. YouTube puede denegar temporalmente el acceso con HTTP 429 o pedir verificación; AiClip no elude esas restricciones ni usa cookies. Si ocurre, inténtalo más tarde o selecciona un archivo local al que tengas derecho de acceso.
+
+Para reutilizar un vídeo de YouTube descargado, abre su proyecto y pulsa **Guardar vídeo original**. En navegadores compatibles se abre el selector para elegir la carpeta y el nombre; si no, el navegador lo guarda en su carpeta de descargas. La copia elegida no se elimina al limpiar el historial.
+
+El análisis genera candidatos a clips de forma local con reglas ligeras sobre las marcas de tiempo y el texto; Groq GPT-OSS 20B selecciona y titula esos momentos, sin recibir la transcripción completa para esta etapa. La cantidad objetivo depende de la duración, y los candidatos se distribuyen a lo largo del vídeo sin solaparse. Si Groq devuelve HTTP 413 o el límite de tokens por minuto, AiClip divide el grupo de candidatos y vuelve a intentarlo.
+
+Cada exportación crea archivos de clip y miniatura con nombres únicos; volver a exportar conserva los archivos anteriores. La vista previa y el ZIP usan la exportación más reciente de cada clip.
+
+Los trabajos que terminan con error se pueden volver a poner en cola desde su pantalla. **Limpiar historial** elimina los trabajos y sus archivos descargados o temporales, pero conserva los clips y miniaturas exportados. No se puede limpiar mientras haya trabajos activos.
+
 Al iniciar, AiClip consulta los releases públicos de GitHub para avisar si hay una nueva versión. Esta consulta no envía vídeos ni claves de API. El enlace descarga el instalador MSI; debes abrirlo e iniciar la instalación manualmente.
 
 YouTube puede limitar temporalmente las solicitudes y mostrar un error HTTP 429 o pedir una verificación. En ese caso, inténtalo más tarde o selecciona el vídeo como archivo local; AiClip no utiliza las cookies del navegador.
 
 ## Privacidad y derechos
 
-El vídeo permanece en el PC. Solo se envían a Groq fragmentos de audio mono de 16 kHz para transcribirlos y a Google Gemini el texto de la transcripción para proponer clips y títulos. Se requiere confirmación en la aplicación antes de iniciar un trabajo. Cada usuario es responsable de tener los derechos necesarios para procesar el contenido.
+El vídeo permanece en el PC. Se envían a Groq fragmentos de audio mono de 16 kHz para transcribirlos. La búsqueda local de candidatos usa la transcripción en este PC; para elegir y titular clips, se envían a Groq solo los textos y tiempos de los candidatos seleccionados, no la transcripción completa. El texto pertinente también puede enviarse para generar títulos de miniatura. Se requiere confirmación en la aplicación antes de iniciar un trabajo. Cada usuario es responsable de tener los derechos necesarios para procesar el contenido.
 
 ## Estado
 

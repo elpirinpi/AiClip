@@ -12,6 +12,7 @@ OUTPUT_HEIGHT = 1920
 FACE_SAMPLE_SECONDS = 0.5
 FACE_SMOOTHING = 0.35
 MIN_FACE_DETECTIONS = 2
+MULTIPLE_FACES_SAMPLE_RATIO = 0.25
 
 
 class ReframeError(RuntimeError):
@@ -124,17 +125,33 @@ def analyze_face_tracking(
         fps = float(capture.get(cv2.CAP_PROP_FPS))
         if width <= 0 or height <= 0 or not math.isfinite(fps) or fps <= 0:
             raise ReframeError("No se pudieron leer las dimensiones del vídeo.")
-        cascade_path = Path(cv2.data.haarcascades) / "haarcascade_frontalface_default.xml"
-        detector = cv2.CascadeClassifier(str(cascade_path))
-        if detector.empty():
+        cascade_dir = Path(cv2.data.haarcascades)
+        frontal_detector = cv2.CascadeClassifier(
+            str(cascade_dir / "haarcascade_frontalface_default.xml")
+        )
+        if frontal_detector.empty():
             raise ReframeError(
                 "OpenCV no pudo cargar el detector de rostros integrado."
             )
+        alternate_detector = cv2.CascadeClassifier(
+            str(cascade_dir / "haarcascade_frontalface_alt2.xml")
+        )
+        if alternate_detector.empty():
+            alternate_detector = None
+        profile_detector = cv2.CascadeClassifier(
+            str(cascade_dir / "haarcascade_profileface.xml")
+        )
+        if profile_detector.empty():
+            profile_detector = None
 
         sample_count = max(1, math.ceil(clip_duration / FACE_SAMPLE_SECONDS))
         detections: list[FaceCenter] = []
-        multiple_people = False
-        scale = min(1.0, 640 / width)
+        multiple_face_samples = 0
+        multiple_face_threshold = max(
+            2,
+            math.ceil(sample_count * MULTIPLE_FACES_SAMPLE_RATIO),
+        )
+        scale = min(1.0, 800 / max(width, height))
         for index in range(sample_count):
             time_in_clip = min(index * FACE_SAMPLE_SECONDS, clip_duration)
             frame_index = round((clip_start + time_in_clip) * fps)
@@ -151,17 +168,22 @@ def analyze_face_tracking(
                     fy=scale,
                     interpolation=cv2.INTER_AREA,
                 )
-            faces = detector.detectMultiScale(
+            gray = cv2.equalizeHist(gray)
+            faces = _detect_faces(
                 gray,
-                scaleFactor=1.1,
-                minNeighbors=5,
-                minSize=(30, 30),
+                frontal_detector,
+                alternate_detector,
+                profile_detector,
             )
             if len(faces) > 1:
-                multiple_people = True
-                break
-            if len(faces) == 1:
-                x, y, face_width, face_height = faces[0]
+                multiple_face_samples += 1
+                if multiple_face_samples >= multiple_face_threshold:
+                    break
+            if faces:
+                x, y, face_width, face_height = max(
+                    faces,
+                    key=lambda face: face[2] * face[3],
+                )
                 detections.append(
                     FaceCenter(
                         time=time_in_clip,
@@ -176,12 +198,90 @@ def analyze_face_tracking(
             height,
             "face",
             detections=detections,
-            multiple_people=multiple_people,
+            multiple_people=multiple_face_samples >= multiple_face_threshold,
         )
     except cv2.error as exc:
         raise ReframeError("OpenCV no pudo analizar las caras del vídeo.") from exc
     finally:
         capture.release()
+
+
+def _detect_faces(
+    gray,
+    frontal_detector,
+    alternate_detector,
+    profile_detector,
+) -> list[tuple[int, int, int, int]]:
+    _, width = gray.shape
+    inputs = [("frontal", frontal_detector, gray, False)]
+    if alternate_detector is not None:
+        inputs.append(("alternate", alternate_detector, gray, False))
+    if profile_detector is not None:
+        inputs.extend(
+            [
+                ("profile", profile_detector, gray, False),
+                ("profile", profile_detector, cv2.flip(gray, 1), True),
+            ]
+        )
+
+    detections: list[tuple[tuple[int, int, int, int], set[str]]] = []
+    for detector_name, detector, image, mirrored in inputs:
+        for x, y, face_width, face_height in detector.detectMultiScale(
+            image,
+            scaleFactor=1.08,
+            minNeighbors=4,
+            minSize=(24, 24),
+        ):
+            if mirrored:
+                x = width - x - face_width
+            candidate = (int(x), int(y), int(face_width), int(face_height))
+            match = next(
+                (
+                    voters
+                    for face, voters in detections
+                    if _face_overlap(candidate, face) >= 0.6
+                ),
+                None,
+            )
+            if match is None:
+                detections.append((candidate, {detector_name}))
+            else:
+                match.add(detector_name)
+
+    confirmed = [face for face, voters in detections if len(voters) >= 2]
+    if confirmed:
+        return confirmed
+    if detections:
+        largest = max(
+            detections,
+            key=lambda detection: detection[0][2] * detection[0][3],
+        )
+        return [largest[0]]
+    return []
+
+
+def _face_overlap(
+    first: tuple[int, int, int, int],
+    second: tuple[int, int, int, int],
+) -> float:
+    first_x, first_y, first_width, first_height = first
+    second_x, second_y, second_width, second_height = second
+    intersection_width = max(
+        0,
+        min(first_x + first_width, second_x + second_width)
+        - max(first_x, second_x),
+    )
+    intersection_height = max(
+        0,
+        min(first_y + first_height, second_y + second_height)
+        - max(first_y, second_y),
+    )
+    intersection = intersection_width * intersection_height
+    smaller_face_area = min(
+        first_width * first_height,
+        second_width * second_height,
+    )
+    return intersection / smaller_face_area if smaller_face_area else 0
 
 
 def build_crop_filter(plan: ReframePlan) -> str:

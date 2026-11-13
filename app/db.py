@@ -81,6 +81,24 @@ def initialize_database(connection: sqlite3.Connection) -> None:
         )
         """
     )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS clip_exports (
+            id INTEGER PRIMARY KEY,
+            job_id TEXT NOT NULL,
+            clip_id INTEGER NOT NULL,
+            video_path TEXT NOT NULL,
+            thumbnail_path TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_clip_exports_latest
+        ON clip_exports (job_id, clip_id, id DESC)
+        """
+    )
 
 
 def save_clips(
@@ -316,6 +334,50 @@ def list_queued_jobs(path: Path | None = None) -> list[sqlite3.Row]:
         connection.close()
 
 
+def retry_failed_job(job_id: str, path: Path | None = None) -> bool:
+    connection = connect_database(path)
+    try:
+        initialize_database(connection)
+        with connection:
+            cursor = connection.execute(
+                """
+                UPDATE jobs
+                SET status = 'queued', progress = 0, error = NULL,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND status = 'failed'
+                """,
+                (job_id,),
+            )
+            return cursor.rowcount == 1
+    except sqlite3.Error as exc:
+        raise DatabaseError("No se pudo volver a poner el trabajo en la cola.") from exc
+    finally:
+        connection.close()
+
+
+def delete_job_history(path: Path | None = None) -> int:
+    connection = connect_database(path)
+    try:
+        initialize_database(connection)
+        with connection:
+            job_count = connection.execute(
+                "SELECT COUNT(*) FROM jobs"
+            ).fetchone()[0]
+            connection.execute("DELETE FROM clip_exports")
+            connection.execute(
+                "DELETE FROM clips WHERE source IN (SELECT id FROM jobs)"
+            )
+            connection.execute(
+                "DELETE FROM transcript_words WHERE source IN (SELECT id FROM jobs)"
+            )
+            connection.execute("DELETE FROM jobs")
+        return int(job_count)
+    except sqlite3.Error as exc:
+        raise DatabaseError("No se pudo limpiar el historial de trabajos.") from exc
+    finally:
+        connection.close()
+
+
 def get_clip(source: str, clip_id: int, path: Path | None = None) -> sqlite3.Row | None:
     connection = connect_database(path)
     try:
@@ -417,6 +479,61 @@ def add_manual_clip(
             return int(cursor.lastrowid)
     except sqlite3.Error as exc:
         raise DatabaseError("No se pudo crear el clip manual.") from exc
+    finally:
+        connection.close()
+
+
+def save_clip_export(
+    job_id: str,
+    clip_id: int,
+    video_path: Path,
+    thumbnail_path: Path,
+    path: Path | None = None,
+) -> None:
+    connection = connect_database(path)
+    try:
+        initialize_database(connection)
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO clip_exports (
+                    job_id, clip_id, video_path, thumbnail_path
+                )
+                VALUES (?, ?, ?, ?)
+                """,
+                (
+                    job_id,
+                    clip_id,
+                    str(video_path),
+                    str(thumbnail_path),
+                ),
+            )
+    except sqlite3.Error as exc:
+        raise DatabaseError("No se pudo guardar la ruta de exportación del clip.") from exc
+    finally:
+        connection.close()
+
+
+def get_clip_export(
+    job_id: str,
+    clip_id: int,
+    path: Path | None = None,
+) -> sqlite3.Row | None:
+    connection = connect_database(path)
+    try:
+        initialize_database(connection)
+        return connection.execute(
+            """
+            SELECT video_path, thumbnail_path
+            FROM clip_exports
+            WHERE job_id = ? AND clip_id = ?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (job_id, clip_id),
+        ).fetchone()
+    except sqlite3.Error as exc:
+        raise DatabaseError("No se pudo leer la exportación del clip.") from exc
     finally:
         connection.close()
 

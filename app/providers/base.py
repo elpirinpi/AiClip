@@ -6,6 +6,10 @@ class ProviderError(RuntimeError):
     """Error legible al usar un proveedor de IA."""
 
 
+class RequestTooLargeError(ProviderError):
+    """Error que permite reducir el tamaño de una solicitud al proveedor."""
+
+
 @dataclass(frozen=True)
 class TranscriptWord:
     start: float

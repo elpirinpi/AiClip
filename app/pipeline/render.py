@@ -1,10 +1,10 @@
 import logging
-import shutil
 import subprocess
 from functools import lru_cache
 from pathlib import Path
 
 from app.config import AppConfig
+from app.pipeline.ffmpeg import find_ffmpeg
 from app.pipeline.reframe import (
     OUTPUT_HEIGHT,
     OUTPUT_WIDTH,
@@ -160,12 +160,10 @@ def _select_video_encoder(ffmpeg: str) -> str:
 
 
 def _find_executable(value: str) -> str:
-    executable = shutil.which(value)
+    executable = find_ffmpeg(value)
     if executable:
         return executable
-    path = Path(value)
-    if path.is_file():
-        return str(path)
     raise RenderError(
-        "No se encontró FFmpeg. Instálalo o indica su ruta en config.local.json."
+        "No se encontró FFmpeg ni en el paquete de AiClip ni en la ruta "
+        "configurada. Reinstala AiClip o comprueba ffmpeg_path en config.local.json."
     )

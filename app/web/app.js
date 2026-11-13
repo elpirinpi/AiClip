@@ -73,6 +73,8 @@ function jobCard(job) {
 async function loadJobs() {
   const jobs = await api("/api/jobs");
   const list = $("#jobsList");
+  const active = jobs.some((job) => ["queued", "processing", "render_queued", "rendering"].includes(job.status));
+  $("#clearHistory").disabled = jobs.length === 0 || active;
   list.innerHTML = jobs.length
     ? jobs.map(jobCard).join("")
     : '<div class="empty-state">Todavía no hay proyectos. Añade un vídeo para comenzar.</div>';
@@ -149,6 +151,25 @@ $("#jobForm").addEventListener("submit", async (event) => {
 });
 
 $("#refreshJobs").addEventListener("click", () => loadJobs().catch((error) => toast(error.message, true)));
+$("#clearHistory").addEventListener("click", async () => {
+  const confirmed = window.confirm(
+    "Se borrarán los trabajos del historial y sus archivos descargados o temporales. "
+    + "Los clips y miniaturas exportados se conservarán."
+  );
+  if (!confirmed) return;
+  const button = $("#clearHistory");
+  button.disabled = true;
+  try {
+    const result = await api("/api/jobs", { method: "DELETE" });
+    activeJobId = null;
+    clearInterval(jobsTimer);
+    await loadJobs();
+    toast(`Historial limpiado. Trabajos eliminados: ${result.deleted}.`);
+  } catch (error) {
+    toast(error.message, true);
+    await loadJobs().catch(() => {});
+  }
+});
 $("#homeTab").addEventListener("click", () => {
   clearInterval(jobsTimer);
   showScreen("home");
@@ -170,7 +191,6 @@ async function loadSettings() {
   $("#subtitleStyle").value = settings.subtitle_style;
   $("#reframeMode").value = settings.reframe_mode;
   $("#groqStatus").textContent = settings.groq_key_configured ? "Configurada · clave oculta" : "Falta configurar";
-  $("#geminiStatus").textContent = settings.gemini_key_configured ? "Configurada · clave oculta" : "Falta configurar";
 }
 
 async function checkForUpdates(showErrors = false) {
@@ -215,7 +235,6 @@ $("#settingsForm").addEventListener("submit", async (event) => {
   status.textContent = "Guardando…";
   const body = {
     groq_api_key: $("#groqKey").value,
-    gemini_api_key: $("#geminiKey").value,
     output_folder: $("#outputFolder").value,
     subtitle_style: $("#subtitleStyle").value,
     reframe_mode: $("#reframeMode").value,
@@ -227,7 +246,6 @@ $("#settingsForm").addEventListener("submit", async (event) => {
       body: JSON.stringify(body),
     });
     $("#groqKey").value = "";
-    $("#geminiKey").value = "";
     await loadSettings();
     status.textContent = "Ajustes guardados en este PC.";
   } catch (error) {
@@ -253,6 +271,8 @@ async function updateJobView() {
   $("#detailName").textContent = job.source.startsWith("http")
     ? job.source
     : job.source.split(/[\\/]/).pop();
+  $("#saveSourceVideo").dataset.filename = job.source_video_name;
+  $("#saveSourceVideo").classList.toggle("hidden", !job.source_video_available);
   $("#detailStatus").textContent = STATUS_LABELS[job.status] || job.status;
   const busy = ["queued", "processing", "render_queued", "rendering"].includes(job.status);
   $("#jobProgress").classList.toggle("hidden", !busy && job.status !== "failed");
@@ -261,6 +281,8 @@ async function updateJobView() {
   $("#progressBar").style.width = `${job.progress}%`;
   $("#jobError").textContent = job.error || "";
   $("#jobError").classList.toggle("hidden", !job.error);
+  $("#retryJob").classList.toggle("hidden", job.status !== "failed");
+  $("#retryJob").disabled = busy;
   $("#manualClipForm").classList.toggle("hidden", !["ready", "completed"].includes(job.status));
   $("#renderSelected").disabled = busy || !["ready", "completed"].includes(job.status);
   $("#downloadSelected").disabled = !["completed"].includes(job.status);
@@ -286,8 +308,17 @@ function renderClipList(job) {
     return;
   }
   list.innerHTML = job.clips.map((clip) => {
-    const preview = job.status === "completed" && clip.selected
-      ? `<video class="clip-preview" controls preload="none" src="/api/jobs/${encodeURIComponent(job.id)}/clips/${clip.id}/preview"></video>`
+    const isRendered = job.status === "completed" && clip.selected;
+    const canPreview = ["ready", "render_queued", "rendering", "completed"].includes(job.status);
+    const timeBounds = isRendered
+      ? ""
+      : `data-start="${clip.start}" data-end="${clip.end}"`;
+    const preview = canPreview
+      ? `${isRendered ? "" : '<p class="preview-label">Tramo original · el encuadre vertical aparece al exportar</p>'}
+        <video class="clip-preview" controls playsinline preload="metadata"
+          ${timeBounds}
+          aria-label="Vista previa: ${escapeHtml(clip.title)}"
+          src="/api/jobs/${encodeURIComponent(job.id)}/clips/${clip.id}/${isRendered ? "preview" : "source-preview"}"></video>`
       : "";
     return `
       <article class="clip-card" data-clip-id="${clip.id}">
@@ -319,6 +350,34 @@ function renderClipList(job) {
       const clip = job.clips.find((item) => item.id === clipId);
       await saveClip(card, clipId, job.id, card.querySelector(".clip-check").checked, clip);
     });
+  });
+  list.querySelectorAll(".clip-preview[data-start]").forEach((video) => {
+    const start = Number(video.dataset.start);
+    const end = Number(video.dataset.end);
+    video.addEventListener("loadedmetadata", () => {
+      if (Number.isFinite(start) && start < video.duration) {
+        video.currentTime = start;
+      }
+    }, { once: true });
+    video.addEventListener("seeking", () => {
+      if (video.currentTime < start || video.currentTime > end) {
+        video.currentTime = Math.min(end, Math.max(start, video.currentTime));
+      }
+    });
+    video.addEventListener("timeupdate", () => {
+      if (video.currentTime >= end) {
+        video.pause();
+        video.currentTime = start;
+      }
+    });
+    video.addEventListener("error", () => {
+      const label = video.previousElementSibling;
+      if (label?.classList.contains("preview-label")) {
+        label.textContent = "Este formato no se puede previsualizar en el navegador.";
+      } else {
+        toast("El navegador no pudo reproducir el clip exportado.", true);
+      }
+    }, { once: true });
   });
 }
 
@@ -387,8 +446,59 @@ $("#renderSelected").addEventListener("click", async () => {
   }
 });
 
+$("#retryJob").addEventListener("click", async () => {
+  if (!activeJobId) return;
+  const button = $("#retryJob");
+  button.disabled = true;
+  button.textContent = "Reintentando…";
+  try {
+    await api(`/api/jobs/${encodeURIComponent(activeJobId)}/retry`, { method: "POST" });
+    toast("El análisis se volvió a añadir a la cola.");
+    await openJob(activeJobId);
+  } catch (error) {
+    toast(error.message, true);
+  } finally {
+    button.textContent = "Reintentar análisis";
+  }
+});
+
 $("#downloadSelected").addEventListener("click", () => {
   if (activeJobId) window.location.href = `/api/jobs/${encodeURIComponent(activeJobId)}/download`;
+});
+
+$("#saveSourceVideo").addEventListener("click", async () => {
+  if (!activeJobId) return;
+  const url = `/api/jobs/${encodeURIComponent(activeJobId)}/source-download`;
+  const suggestedName = $("#saveSourceVideo").dataset.filename || "video-original.mp4";
+  try {
+    if (window.showSaveFilePicker) {
+      const fileHandle = await window.showSaveFilePicker({
+        suggestedName,
+        types: [{
+          description: "Vídeo",
+          accept: { "video/*": [".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v"] },
+        }],
+      });
+      const response = await fetch(url);
+      if (!response.ok) {
+        const result = await response.json().catch(() => ({}));
+        throw new Error(result.detail || "No se pudo guardar el vídeo original.");
+      }
+      const writable = await fileHandle.createWritable();
+      await response.body.pipeTo(writable);
+      toast("Vídeo original guardado en la carpeta elegida.");
+    } else {
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = "";
+      document.body.append(link);
+      link.click();
+      link.remove();
+      toast("El navegador descargará el vídeo en su carpeta de descargas.");
+    }
+  } catch (error) {
+    if (error.name !== "AbortError") toast(error.message, true);
+  }
 });
 
 loadJobs().catch((error) => toast(error.message, true));

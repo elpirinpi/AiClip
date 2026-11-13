@@ -1,8 +1,10 @@
 import asyncio
 import json
 import logging
+import mimetypes
 import shutil
 import sqlite3
+import threading
 import uuid
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
@@ -19,7 +21,9 @@ from app.db import (
     DatabaseError,
     add_manual_clip,
     create_job,
+    delete_job_history,
     get_clip,
+    get_clip_export,
     get_clips,
     get_job,
     get_job_clips,
@@ -27,6 +31,8 @@ from app.db import (
     get_transcript_words,
     list_jobs,
     list_queued_jobs,
+    retry_failed_job,
+    save_clip_export,
     save_results,
     set_clip_selection,
     update_clip,
@@ -34,22 +40,28 @@ from app.db import (
 )
 from app.pipeline.analyze import AnalysisError, analyze_transcript
 from app.pipeline.audio import AudioProcessingError, create_audio_chunks
-from app.pipeline.ingest import IngestError, is_youtube_url, resolve_video_source
+from app.pipeline.ingest import (
+    IngestError,
+    normalize_youtube_url,
+    resolve_video_source,
+)
 from app.pipeline.render import RenderError, render_clip
 from app.pipeline.segment import Clip
 from app.pipeline.thumbnail import ThumbnailError, create_thumbnail
 from app.pipeline.transcribe import transcribe_chunks
 from app.providers.base import ProviderError
-from app.providers.gemini_llm import create_analyzer
 from app.providers.groq_stt import create_transcriber
+from app.providers.groq_llm import create_analyzer
 from app.updates import UpdateCheckError, check_for_updates
 
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api")
 job_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="aiclip-job")
+job_state_lock = threading.Lock()
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v"}
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024 * 1024
+ACTIVE_JOB_STATUSES = {"queued", "processing", "render_queued", "rendering"}
 
 
 class SettingsUpdate(BaseModel):
@@ -92,9 +104,13 @@ def _job_row(job_id: str):
 
 
 def _serialize_job(job) -> dict[str, object]:
+    input_path = Path(job["input_path"]) if job["input_path"] else None
+    source_available = input_path is not None and input_path.is_file()
     return {
         "id": job["id"],
         "source": job["source"],
+        "source_video_available": source_available,
+        "source_video_name": input_path.name if source_available else "",
         "status": job["status"],
         "progress": job["progress"],
         "error": job["error"],
@@ -152,12 +168,27 @@ def _process_job(job_id: str) -> None:
         update_job(job_id, progress=70, path=DEFAULT_DATABASE_PATH)
         analyzer = create_analyzer(config)
         try:
-            candidates = analyze_transcript(words, analyzer)
+            candidates = analyze_transcript(
+                words,
+                analyzer,
+                progress_callback=lambda progress: update_job(
+                    job_id,
+                    progress=progress,
+                    path=DEFAULT_DATABASE_PATH,
+                ),
+            )
         finally:
             analyzer.close()
         from app.pipeline.segment import snap_clips_to_sentences
 
         clips, warnings = snap_clips_to_sentences(candidates, words)
+        logger.info(
+            "Trabajo %s: Groq propuso %d momentos; %d pasaron el ajuste de "
+            "duración y solapamientos.",
+            job_id,
+            len(candidates),
+            len(clips),
+        )
         save_results(job_id, clips, words, DEFAULT_DATABASE_PATH)
         update_job(job_id, status="ready", progress=100, path=DEFAULT_DATABASE_PATH)
         for warning in warnings:
@@ -201,6 +232,7 @@ def _render_job(job_id: str) -> None:
         thumbnail_dir.mkdir(parents=True, exist_ok=True)
         analyzer = create_analyzer(config)
         update_job(job_id, status="rendering", progress=5, path=DEFAULT_DATABASE_PATH)
+        export_id = uuid.uuid4().hex
         for index, row in enumerate(selected, start=1):
             clip = Clip(
                 start=row["start"],
@@ -209,15 +241,19 @@ def _render_job(job_id: str) -> None:
                 reason=row["reason"],
                 score=row["score"],
             )
+            filename_stem = (
+                f"job_{job_id[:8]}_{export_id}_clip_{row['id']:05d}"
+            )
+            thumbnail_path = thumbnail_dir / f"{filename_stem}.png"
+            output_path = output_dir / (
+                f"{filename_stem}_{config.reframe_mode}_{config.subtitle_style}.mp4"
+            )
             create_thumbnail(
                 video_path,
                 clip,
                 words,
                 analyzer,
-                thumbnail_dir / f"clip_{row['id']:05d}.png",
-            )
-            output_path = output_dir / (
-                f"clip_{row['id']:05d}_{config.reframe_mode}_{config.subtitle_style}.mp4"
+                thumbnail_path,
             )
             render_clip(
                 video_path,
@@ -229,8 +265,20 @@ def _render_job(job_id: str) -> None:
                 config,
                 reframe_mode=config.reframe_mode,
             )
+            save_clip_export(
+                job_id,
+                row["id"],
+                output_path,
+                thumbnail_path,
+                DEFAULT_DATABASE_PATH,
+            )
             progress = round(5 + 90 * index / len(selected))
-            update_job(job_id, status="rendering", progress=progress, path=DEFAULT_DATABASE_PATH)
+            update_job(
+                job_id,
+                status="rendering",
+                progress=progress,
+                path=DEFAULT_DATABASE_PATH,
+            )
         update_job(job_id, status="completed", progress=100, path=DEFAULT_DATABASE_PATH)
     except (
         ConfigError,
@@ -299,7 +347,6 @@ def read_settings() -> dict[str, object]:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     return {
         "groq_key_configured": bool(config.groq_api_key),
-        "gemini_key_configured": bool(config.gemini_api_key),
         "output_folder": str(config.output_folder),
         "subtitle_style": config.subtitle_style,
         "reframe_mode": config.reframe_mode,
@@ -320,7 +367,6 @@ def write_settings(settings: SettingsUpdate) -> dict[str, object]:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {
         "groq_key_configured": bool(config.groq_api_key),
-        "gemini_key_configured": bool(config.gemini_api_key),
         "output_folder": str(config.output_folder),
         "subtitle_style": config.subtitle_style,
         "reframe_mode": config.reframe_mode,
@@ -374,16 +420,19 @@ async def submit_job(
                 raise HTTPException(status_code=400, detail="El archivo está vacío.")
             label = Path(video.filename or "video").name
         else:
-            if not is_youtube_url(source):
+            normalized_source = normalize_youtube_url(source)
+            if normalized_source is None:
                 raise HTTPException(
                     status_code=400,
-                    detail="Pega un enlace HTTPS válido de YouTube.",
+                    detail="Pega un enlace válido de YouTube, por ejemplo youtube.com/watch?v=… o youtu.be/…",
                 )
-            label = source
+            source = normalized_source
+            label = normalized_source
 
-        create_job(job_id, label, input_path, DEFAULT_DATABASE_PATH)
-        _schedule_job(job_id, "process")
-        return _serialize_job(get_job(job_id, DEFAULT_DATABASE_PATH))
+        with job_state_lock:
+            create_job(job_id, label, input_path, DEFAULT_DATABASE_PATH)
+            _schedule_job(job_id, "process")
+            return _serialize_job(get_job(job_id, DEFAULT_DATABASE_PATH))
     except HTTPException:
         shutil.rmtree(job_dir, ignore_errors=True)
         raise
@@ -414,6 +463,82 @@ def read_job(job_id: str) -> dict[str, object]:
         return response
     except DatabaseError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.get("/jobs/{job_id}/source-download")
+def download_source_video(job_id: str) -> FileResponse:
+    job = _job_row(job_id)
+    input_path = Path(job["input_path"]) if job["input_path"] else None
+    if input_path is None or not input_path.is_file():
+        raise HTTPException(
+            status_code=404, detail="No se encontró el vídeo original para guardar."
+        )
+    media_type = mimetypes.guess_type(input_path.name)[0] or "application/octet-stream"
+    return FileResponse(
+        input_path,
+        media_type=media_type,
+        filename=input_path.name,
+    )
+
+
+@router.post("/jobs/{job_id}/retry", status_code=202)
+def retry_job(job_id: str) -> dict[str, object]:
+    with job_state_lock:
+        job = _job_row(job_id)
+        if job["status"] != "failed":
+            raise HTTPException(
+                status_code=409,
+                detail="Solo se pueden reintentar trabajos que terminaron con error.",
+            )
+        try:
+            if not retry_failed_job(job_id, DEFAULT_DATABASE_PATH):
+                raise HTTPException(
+                    status_code=409,
+                    detail="El estado del trabajo cambió. Actualiza la página e inténtalo de nuevo.",
+                )
+            _schedule_job(job_id, "process")
+            retried_job = get_job(job_id, DEFAULT_DATABASE_PATH)
+            if retried_job is None:
+                raise HTTPException(
+                    status_code=404, detail="No se encontró el trabajo."
+                )
+            return _serialize_job(retried_job)
+        except DatabaseError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.delete("/jobs")
+def clear_job_history() -> dict[str, int]:
+    with job_state_lock:
+        try:
+            jobs = list_jobs(DEFAULT_DATABASE_PATH)
+            if any(job["status"] in ACTIVE_JOB_STATUSES for job in jobs):
+                raise HTTPException(
+                    status_code=409,
+                    detail="Espera a que terminen los trabajos activos antes de limpiar el historial.",
+                )
+            config = _load_settings_or_http_error()
+            jobs_root = (config.output_folder / "jobs").resolve()
+            for job in jobs:
+                job_dir = (jobs_root / job["id"]).resolve()
+                if job_dir.parent != jobs_root:
+                    raise HTTPException(
+                        status_code=500,
+                        detail="Se encontró una carpeta de trabajo fuera de la ubicación permitida.",
+                    )
+                if job_dir.exists():
+                    shutil.rmtree(job_dir)
+            deleted = delete_job_history(DEFAULT_DATABASE_PATH)
+            return {"deleted": deleted}
+        except DatabaseError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        except OSError as exc:
+            logger.exception("No se pudieron eliminar los archivos del historial.")
+            raise HTTPException(
+                status_code=500,
+                detail="No se pudieron eliminar todos los archivos de trabajo. "
+                "El historial no se ha limpiado.",
+            ) from exc
 
 
 @router.put("/jobs/{job_id}/clips/{clip_id}")
@@ -492,29 +617,30 @@ def update_selection(job_id: str, update: SelectionUpdate) -> dict[str, str]:
 
 @router.post("/jobs/{job_id}/render", status_code=202)
 def render_selected(job_id: str) -> dict[str, object]:
-    _require_ready_job(job_id)
-    try:
-        selected = [
-            clip
-            for clip in get_job_clips(job_id, DEFAULT_DATABASE_PATH)
-            if clip["selected"]
-        ]
-        if not selected:
-            raise HTTPException(
-                status_code=400,
-                detail="Selecciona al menos un clip para exportar.",
+    with job_state_lock:
+        _require_ready_job(job_id)
+        try:
+            selected = [
+                clip
+                for clip in get_job_clips(job_id, DEFAULT_DATABASE_PATH)
+                if clip["selected"]
+            ]
+            if not selected:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Selecciona al menos un clip para exportar.",
+                )
+            update_job(
+                job_id,
+                status="render_queued",
+                progress=0,
+                error=None,
+                path=DEFAULT_DATABASE_PATH,
             )
-        update_job(
-            job_id,
-            status="render_queued",
-            progress=0,
-            error=None,
-            path=DEFAULT_DATABASE_PATH,
-        )
-        _schedule_job(job_id, "render")
-        return _serialize_job(get_job(job_id, DEFAULT_DATABASE_PATH))
-    except DatabaseError as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+            _schedule_job(job_id, "render")
+            return _serialize_job(get_job(job_id, DEFAULT_DATABASE_PATH))
+        except DatabaseError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @router.get("/jobs/{job_id}/clips/{clip_id}/preview")
@@ -528,16 +654,50 @@ def preview_clip(
     clip = get_clip(job_id, clip_id, DEFAULT_DATABASE_PATH)
     if clip is None or not clip["selected"]:
         raise HTTPException(status_code=404, detail="No se encontró el clip exportado.")
-    config = _load_settings_or_http_error()
-    output = (
-        config.output_folder
-        / "clips"
-        / f"clip_{clip_id:05d}_{reframe or config.reframe_mode}_"
-        f"{style or config.subtitle_style}.mp4"
-    )
+    try:
+        export = get_clip_export(job_id, clip_id, DEFAULT_DATABASE_PATH)
+    except DatabaseError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    if export is not None and reframe is None and style is None:
+        output = Path(export["video_path"])
+    else:
+        config = _load_settings_or_http_error()
+        output = (
+            config.output_folder
+            / "clips"
+            / f"clip_{clip_id:05d}_{reframe or config.reframe_mode}_"
+            f"{style or config.subtitle_style}.mp4"
+        )
     if not output.is_file():
         raise HTTPException(status_code=404, detail="Todavía no existe una vista previa.")
     return FileResponse(output, media_type="video/mp4")
+
+
+@router.get("/jobs/{job_id}/clips/{clip_id}/source-preview")
+def preview_clip_source(job_id: str, clip_id: int) -> FileResponse:
+    job = _require_job_status(
+        job_id,
+        {"ready", "render_queued", "rendering", "completed"},
+    )
+    try:
+        clip = get_clip(job_id, clip_id, DEFAULT_DATABASE_PATH)
+    except DatabaseError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    if clip is None:
+        raise HTTPException(status_code=404, detail="No se encontró el clip.")
+    if not job["input_path"]:
+        raise HTTPException(
+            status_code=404,
+            detail="No se encontró el vídeo original para la vista previa.",
+        )
+    video_path = Path(job["input_path"])
+    if not video_path.is_file():
+        raise HTTPException(
+            status_code=404,
+            detail="No se encontró el vídeo original para la vista previa.",
+        )
+    media_type = mimetypes.guess_type(video_path.name)[0] or "video/mp4"
+    return FileResponse(video_path, media_type=media_type)
 
 
 @router.get("/jobs/{job_id}/download")
@@ -553,19 +713,29 @@ def download_selected(job_id: str) -> FileResponse:
         raise HTTPException(status_code=404, detail="No hay clips seleccionados.")
     job_dir = config.output_folder / "jobs" / job_id
     job_dir.mkdir(parents=True, exist_ok=True)
-    archive_path = job_dir / "clips-seleccionados.zip"
+    archive_id = uuid.uuid4().hex
+    archive_path = job_dir / f"clips-seleccionados-{archive_id}.zip"
     try:
         with zipfile.ZipFile(
             archive_path, mode="w", compression=zipfile.ZIP_DEFLATED
         ) as archive:
             for clip in clips:
-                render_path = config.output_folder / "clips" / (
-                    f"clip_{clip['id']:05d}_{config.reframe_mode}_"
-                    f"{config.subtitle_style}.mp4"
+                export = get_clip_export(
+                    job_id,
+                    clip["id"],
+                    DEFAULT_DATABASE_PATH,
                 )
-                thumbnail_path = config.output_folder / "thumbnails" / (
-                    f"clip_{clip['id']:05d}.png"
-                )
+                if export is None:
+                    render_path = config.output_folder / "clips" / (
+                        f"clip_{clip['id']:05d}_{config.reframe_mode}_"
+                        f"{config.subtitle_style}.mp4"
+                    )
+                    thumbnail_path = config.output_folder / "thumbnails" / (
+                        f"clip_{clip['id']:05d}.png"
+                    )
+                else:
+                    render_path = Path(export["video_path"])
+                    thumbnail_path = Path(export["thumbnail_path"])
                 if render_path.is_file():
                     archive.write(render_path, render_path.name)
                 if thumbnail_path.is_file():
@@ -575,6 +745,8 @@ def download_selected(job_id: str) -> FileResponse:
                 status_code=404,
                 detail="Los archivos aún no están listos para descargar.",
             )
+    except DatabaseError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
     except OSError as exc:
         if getattr(exc, "errno", None) == 28:
             raise HTTPException(
@@ -587,7 +759,7 @@ def download_selected(job_id: str) -> FileResponse:
     return FileResponse(
         archive_path,
         media_type="application/zip",
-        filename=f"aiclip-{job_id[:8]}.zip",
+        filename=archive_path.name,
     )
 
 

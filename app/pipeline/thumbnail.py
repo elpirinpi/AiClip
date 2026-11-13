@@ -63,16 +63,16 @@ def generate_thumbnail_text(
         payload = json.loads(response)
     except (ValueError, TypeError) as exc:
         raise ThumbnailError(
-            "Gemini no devolvió JSON válido para el texto de miniatura."
+            "Groq no devolvió JSON válido para el texto de miniatura."
         ) from exc
     if not isinstance(payload, dict) or not isinstance(payload.get("text"), str):
         raise ThumbnailError(
-            "Gemini no devolvió el texto de miniatura en el formato esperado."
+            "Groq no devolvió el texto de miniatura en el formato esperado."
         )
     title = re.sub(r"\s+", " ", payload["text"]).strip()
     title = title.strip(" \"'“”‘’")
     if not title:
-        raise ThumbnailError("Gemini devolvió vacío el texto de miniatura.")
+        raise ThumbnailError("Groq devolvió vacío el texto de miniatura.")
     title = " ".join(title.split()[:THUMBNAIL_TEXT_LIMIT])
     return title
 

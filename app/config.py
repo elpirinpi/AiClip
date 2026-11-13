@@ -5,6 +5,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from app.providers.models import DEFAULT_ANALYSIS_MODEL
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 APP_DATA_DIR = (
@@ -28,7 +30,7 @@ class AppConfig:
     ffmpeg_path: str
     output_folder: Path
     transcription_model: str = "whisper-large-v3-turbo"
-    analysis_model: str = "gemini-2.5-flash"
+    analysis_model: str = DEFAULT_ANALYSIS_MODEL
     subtitle_style: str = "classic"
     reframe_mode: str = "center"
     transcription_fallback: str | None = None
@@ -115,7 +117,9 @@ def load_config_data(data: dict[str, Any]) -> AppConfig:
     transcription_model = _string_setting(
         data, "transcription_model", "whisper-large-v3-turbo"
     )
-    analysis_model = _string_setting(data, "analysis_model", "gemini-2.5-flash")
+    analysis_model = _string_setting(data, "analysis_model", DEFAULT_ANALYSIS_MODEL)
+    if analysis_model.startswith("gemini-") or analysis_model == "openai/gpt-oss-120b":
+        analysis_model = DEFAULT_ANALYSIS_MODEL
     subtitle_style = _string_setting(data, "subtitle_style", "classic")
     reframe_mode = _string_setting(data, "reframe_mode", "center")
     if subtitle_style not in {"classic", "impact"}:

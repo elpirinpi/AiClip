@@ -1,10 +1,10 @@
 import json
-import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
 from app.config import AppConfig
+from app.pipeline.ffmpeg import find_ffmpeg
 
 
 MAX_AUDIO_CHUNK_BYTES = 24_000_000
@@ -120,14 +120,12 @@ def create_audio_chunks(
 
 
 def _find_executable(value: str) -> str:
-    executable = shutil.which(value)
+    executable = find_ffmpeg(value)
     if executable:
         return executable
-    path = Path(value)
-    if path.is_file():
-        return str(path)
     raise AudioProcessingError(
-        "No se encontró FFmpeg. Instálalo o indica su ruta en config.local.json."
+        "No se encontró FFmpeg ni en el paquete de AiClip ni en la ruta "
+        "configurada. Reinstala AiClip o comprueba ffmpeg_path en config.local.json."
     )
 
 
