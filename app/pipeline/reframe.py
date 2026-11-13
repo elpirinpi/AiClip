@@ -5,11 +5,13 @@ from pathlib import Path
 from typing import Literal
 
 import cv2
+import numpy as np
 
 
 OUTPUT_WIDTH = 1080
 OUTPUT_HEIGHT = 1920
 FACE_SAMPLE_SECONDS = 0.5
+FACE_SAMPLE_WIDTH = 640
 FACE_SMOOTHING = 0.35
 MIN_FACE_DETECTIONS = 2
 MULTIPLE_FACES_SAMPLE_RATIO = 0.25
@@ -112,7 +114,10 @@ def build_reframe_plan(
 
 
 def analyze_face_tracking(
-    video_path: Path, clip_start: float, clip_duration: float
+    video_path: Path,
+    clip_start: float,
+    clip_duration: float,
+    ffmpeg_path: str = "ffmpeg",
 ) -> ReframePlan:
     if clip_start < 0 or clip_duration <= 0:
         raise ValueError("El inicio y la duración del clip no son válidos.")
@@ -122,9 +127,66 @@ def analyze_face_tracking(
     try:
         width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        fps = float(capture.get(cv2.CAP_PROP_FPS))
-        if width <= 0 or height <= 0 or not math.isfinite(fps) or fps <= 0:
+        if width <= 0 or height <= 0:
             raise ReframeError("No se pudieron leer las dimensiones del vídeo.")
+        capture.release()
+
+        sample_count = max(1, math.ceil(clip_duration / FACE_SAMPLE_SECONDS))
+        scaled_width = min(FACE_SAMPLE_WIDTH, width)
+        scaled_height = max(
+            2,
+            round(height * scaled_width / width / 2) * 2,
+        )
+        command = [
+            ffmpeg_path,
+            "-nostdin",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-ss",
+            f"{clip_start:.3f}",
+            "-i",
+            str(video_path.resolve()),
+            "-t",
+            f"{clip_duration:.3f}",
+            "-vf",
+            f"setpts=PTS-STARTPTS,fps={1 / FACE_SAMPLE_SECONDS:g},"
+            f"scale={scaled_width}:-2",
+            "-pix_fmt",
+            "gray",
+            "-f",
+            "rawvideo",
+            "-",
+        ]
+        try:
+            result = subprocess.run(
+                command,
+                check=True,
+                capture_output=True,
+                timeout=max(60, clip_duration * 2),
+            )
+        except FileNotFoundError as exc:
+            raise ReframeError(
+                "No se encontró FFmpeg para analizar el seguimiento facial."
+            ) from exc
+        except subprocess.TimeoutExpired as exc:
+            raise ReframeError(
+                "El análisis de caras tardó demasiado y se canceló."
+            ) from exc
+        except subprocess.CalledProcessError as exc:
+            raise ReframeError(
+                "FFmpeg no pudo leer los fotogramas para analizar las caras."
+            ) from exc
+
+        frame_size = scaled_width * scaled_height
+        if len(result.stdout) % frame_size:
+            raise ReframeError(
+                "FFmpeg devolvió fotogramas incompletos durante el análisis facial."
+            )
+        frame_count = len(result.stdout) // frame_size
+        frames = np.frombuffer(result.stdout, dtype=np.uint8).reshape(
+            (frame_count, scaled_height, scaled_width)
+        )
         cascade_dir = Path(cv2.data.haarcascades)
         frontal_detector = cv2.CascadeClassifier(
             str(cascade_dir / "haarcascade_frontalface_default.xml")
@@ -144,31 +206,17 @@ def analyze_face_tracking(
         if profile_detector.empty():
             profile_detector = None
 
-        sample_count = max(1, math.ceil(clip_duration / FACE_SAMPLE_SECONDS))
         detections: list[FaceCenter] = []
         multiple_face_samples = 0
         multiple_face_threshold = max(
             2,
             math.ceil(sample_count * MULTIPLE_FACES_SAMPLE_RATIO),
         )
-        scale = min(1.0, 800 / max(width, height))
-        for index in range(sample_count):
+        scale_x = scaled_width / width
+        scale_y = scaled_height / height
+        for index, frame in enumerate(frames[:sample_count]):
             time_in_clip = min(index * FACE_SAMPLE_SECONDS, clip_duration)
-            frame_index = round((clip_start + time_in_clip) * fps)
-            capture.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
-            success, frame = capture.read()
-            if not success:
-                continue
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            if scale < 1:
-                gray = cv2.resize(
-                    gray,
-                    None,
-                    fx=scale,
-                    fy=scale,
-                    interpolation=cv2.INTER_AREA,
-                )
-            gray = cv2.equalizeHist(gray)
+            gray = cv2.equalizeHist(frame)
             faces = _detect_faces(
                 gray,
                 frontal_detector,
@@ -187,8 +235,8 @@ def analyze_face_tracking(
                 detections.append(
                     FaceCenter(
                         time=time_in_clip,
-                        x=(x + face_width / 2) / scale,
-                        y=(y + face_height / 2) / scale,
+                        x=(x + face_width / 2) / scale_x,
+                        y=(y + face_height / 2) / scale_y,
                     )
                 )
         if len(detections) < MIN_FACE_DETECTIONS:
@@ -318,20 +366,34 @@ def _position_expression(
     if len(centers) == 1:
         return value(centers[0])
 
-    expression = value(centers[-1])
-    for left, right in reversed(list(zip(centers, centers[1:]))):
+    def interpolate(left: FaceCenter, right: FaceCenter) -> str:
         duration = right.time - left.time
         if duration <= 0:
-            continue
+            return value(right)
         start_value = value(left)
         end_value = value(right)
-        interpolation = (
+        return (
             f"({start_value}+({end_value}-{start_value})"
             f"*(t-{left.time:.3f})/{duration:.3f})"
         )
-        expression = f"if(lt(t\\,{right.time:.3f})\\,{interpolation}\\,{expression})"
-    first = value(centers[0])
-    return f"if(lt(t\\,{centers[0].time:.3f})\\,{first}\\,{expression})"
+
+    def segments(start: int, end: int) -> str:
+        if end - start == 1:
+            right = centers[end]
+            return (
+                f"if(lt(t\\,{right.time:.3f})\\,"
+                f"{interpolate(centers[start], right)}\\,{value(right)})"
+            )
+        middle = (start + end) // 2
+        return (
+            f"if(lt(t\\,{centers[middle].time:.3f})\\,"
+            f"{segments(start, middle)}\\,{segments(middle, end)})"
+        )
+
+    return (
+        f"if(lt(t\\,{centers[0].time:.3f})\\,{value(centers[0])}\\,"
+        f"{segments(0, len(centers) - 1)})"
+    )
 
 
 def probe_nvenc(ffmpeg: str) -> bool:

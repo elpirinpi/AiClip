@@ -1,5 +1,8 @@
+from pathlib import Path
+
 import pytest
 
+import app.pipeline.audio as audio
 from app.pipeline.audio import MAX_AUDIO_CHUNK_BYTES, plan_audio_chunks
 
 
@@ -10,6 +13,18 @@ def test_audio_chunks_are_under_30_minutes_and_overlap() -> None:
     assert chunks[1][0] < chunks[0][1]
     assert chunks[2][0] < chunks[1][1]
     assert MAX_AUDIO_CHUNK_BYTES < 25_000_000
+
+
+def test_find_ffprobe_uses_path_when_not_next_to_ffmpeg(
+    monkeypatch, tmp_path: Path
+) -> None:
+    ffmpeg = tmp_path / "ffmpeg.exe"
+    ffprobe = tmp_path / "ffprobe.exe"
+    ffmpeg.touch()
+    ffprobe.touch()
+    monkeypatch.setattr(audio.shutil, "which", lambda _name: str(ffprobe))
+
+    assert audio._find_ffprobe(str(ffmpeg)) == str(ffprobe)
 
 
 @pytest.mark.parametrize(

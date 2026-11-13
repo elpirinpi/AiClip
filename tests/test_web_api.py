@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 import app.api.routes as routes
 import app.config as config_module
 import scripts.start_app as app_launcher
-from app.db import create_job, save_clip_export, save_results, update_job
+from app.db import create_job, get_job, save_clip_export, save_results, update_job
 from app.main import app
 from app.pipeline.segment import Clip
 from app.providers.base import TranscriptWord
@@ -383,6 +383,7 @@ def test_repeated_exports_keep_unique_files_and_serve_the_latest(
         reframe_mode="center",
     )
     render_count = 0
+    observed_progress = []
 
     class Analyzer:
         def close(self):
@@ -393,10 +394,15 @@ def test_repeated_exports_keep_unique_files_and_serve_the_latest(
         thumbnail_path.parent.mkdir(parents=True, exist_ok=True)
         thumbnail_path.write_bytes(b"thumbnail")
 
-    def render_clip(*args, **_kwargs):
+    def render_clip(*args, **kwargs):
         nonlocal render_count
         render_count += 1
         output_path = args[3]
+        progress_callback = kwargs["progress_callback"]
+        progress_callback(0.5)
+        observed_progress.append(get_job(job_id, database_path)["progress"])
+        progress_callback(0.9)
+        observed_progress.append(get_job(job_id, database_path)["progress"])
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_bytes(f"export-{render_count}".encode("ascii"))
 
@@ -406,6 +412,9 @@ def test_repeated_exports_keep_unique_files_and_serve_the_latest(
     monkeypatch.setattr(routes, "render_clip", render_clip)
 
     routes._render_job(job_id)
+    assert observed_progress[:2] == sorted(observed_progress[:2])
+    assert observed_progress[0] > 5
+    assert observed_progress[1] > observed_progress[0]
     clip = routes.get_job_clips(job_id, database_path)[0]
     first_export = routes.get_clip_export(job_id, clip["id"], database_path)
     assert first_export is not None

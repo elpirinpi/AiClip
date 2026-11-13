@@ -233,6 +233,7 @@ def _render_job(job_id: str) -> None:
         analyzer = create_analyzer(config)
         update_job(job_id, status="rendering", progress=5, path=DEFAULT_DATABASE_PATH)
         export_id = uuid.uuid4().hex
+        last_progress = 5
         for index, row in enumerate(selected, start=1):
             clip = Clip(
                 start=row["start"],
@@ -255,6 +256,31 @@ def _render_job(job_id: str) -> None:
                 analyzer,
                 thumbnail_path,
             )
+            clip_progress_start = 5 + 90 * (index - 1) / len(selected)
+            render_progress_start = clip_progress_start + 90 * 0.1 / len(selected)
+            update_job(
+                job_id,
+                status="rendering",
+                progress=round(render_progress_start),
+                path=DEFAULT_DATABASE_PATH,
+            )
+            last_progress = round(render_progress_start)
+
+            def report_render_progress(fraction: float) -> None:
+                nonlocal last_progress
+                progress = round(
+                    render_progress_start
+                    + 90 * 0.9 * fraction / len(selected)
+                )
+                if progress > last_progress:
+                    update_job(
+                        job_id,
+                        status="rendering",
+                        progress=progress,
+                        path=DEFAULT_DATABASE_PATH,
+                    )
+                    last_progress = progress
+
             render_clip(
                 video_path,
                 clip,
@@ -264,6 +290,7 @@ def _render_job(job_id: str) -> None:
                 config.subtitle_style,
                 config,
                 reframe_mode=config.reframe_mode,
+                progress_callback=report_render_progress,
             )
             save_clip_export(
                 job_id,
@@ -279,6 +306,7 @@ def _render_job(job_id: str) -> None:
                 progress=progress,
                 path=DEFAULT_DATABASE_PATH,
             )
+            last_progress = progress
         update_job(job_id, status="completed", progress=100, path=DEFAULT_DATABASE_PATH)
     except (
         ConfigError,

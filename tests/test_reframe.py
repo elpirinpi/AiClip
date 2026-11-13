@@ -63,6 +63,38 @@ def test_face_mode_smooths_crop_positions() -> None:
     assert "crop=606:1080:" in filter_graph
 
 
+def test_face_position_expression_has_balanced_conditions_for_many_samples() -> None:
+    centers = tuple(FaceCenter(index * 0.5, 400 + index, 500) for index in range(120))
+
+    expression = reframe._position_expression(centers, "x", "iw", 606)
+
+    assert expression.count("if(lt(") == 2 * len(centers) - 2
+    assert len(expression) < 40_000
+    depth = maximum_if_depth(expression)
+    assert depth <= 9
+
+
+def maximum_if_depth(expression: str) -> int:
+    depth = 0
+    maximum = 0
+    parentheses = []
+    index = 0
+    while index < len(expression):
+        if expression.startswith("if(", index):
+            parentheses.append(True)
+            depth += 1
+            maximum = max(maximum, depth)
+            index += 3
+            continue
+        if expression[index] == "(":
+            parentheses.append(False)
+        elif expression[index] == ")":
+            if parentheses.pop():
+                depth -= 1
+        index += 1
+    return maximum
+
+
 def test_face_mode_uses_blurred_background_without_face_or_with_multiple_people() -> None:
     no_face = build_reframe_plan(1920, 1080, "face")
     group = build_reframe_plan(
@@ -80,138 +112,104 @@ def test_smoothing_rejects_out_of_range_alpha() -> None:
         smooth_face_centers([FaceCenter(0, 10, 10)], alpha=0)
 
 
-def test_face_tracking_uses_profile_faces_and_samples_in_clip_time(
+def _mock_face_sample_extraction(
     monkeypatch,
-) -> None:
+    source_width: int,
+    source_height: int,
+    frame_count: int,
+):
     import cv2
     import numpy as np
+    from types import SimpleNamespace
 
     class Capture:
-        frame_index = 0
-        released = False
+        released = 0
 
         def isOpened(self):
             return True
 
         def get(self, prop):
             return {
-                cv2.CAP_PROP_FRAME_WIDTH: 1920,
-                cv2.CAP_PROP_FRAME_HEIGHT: 1080,
-                cv2.CAP_PROP_FPS: 2,
+                cv2.CAP_PROP_FRAME_WIDTH: source_width,
+                cv2.CAP_PROP_FRAME_HEIGHT: source_height,
             }[prop]
 
-        def set(self, _prop, frame_index):
-            self.frame_index = int(frame_index)
-            return True
-
-        def read(self):
-            return True, np.zeros((1080, 1920, 3), dtype=np.uint8)
-
         def release(self):
-            self.released = True
+            self.released += 1
 
     capture = Capture()
+    scaled_width = min(reframe.FACE_SAMPLE_WIDTH, source_width)
+    scaled_height = round(source_height * scaled_width / source_width / 2) * 2
+    samples = (
+        np.stack(
+            [
+                np.full((scaled_height, scaled_width), index, dtype=np.uint8)
+                for index in range(frame_count)
+            ]
+        )
+        if frame_count
+        else np.empty((0, scaled_height, scaled_width), dtype=np.uint8)
+    )
+    commands = []
+
+    def run(command, **_options):
+        commands.append(command)
+        return SimpleNamespace(stdout=samples.tobytes())
 
     class Detector:
-        def __init__(self, path):
-            self.name = (
-                "profile"
-                if "profileface" in path
-                else "alternate"
-                if "alt2" in path
-                else "frontal"
-            )
-            self.calls_by_frame = {}
-
         def empty(self):
             return False
 
-        def detectMultiScale(self, _image, **_options):
-            if self.name == "frontal":
-                return ()
-            x = 40 + (capture.frame_index - 4) * 10
-            if self.name == "alternate":
-                return np.array([[x, 20, 40, 40]])
-            calls = self.calls_by_frame.get(capture.frame_index, 0)
-            self.calls_by_frame[capture.frame_index] = calls + 1
-            if calls % 2:
-                return ()
-            return np.array([[x, 20, 40, 40]])
-
     monkeypatch.setattr(reframe.cv2, "VideoCapture", lambda _path: capture)
-    monkeypatch.setattr(reframe.cv2, "CascadeClassifier", Detector)
+    monkeypatch.setattr(reframe.cv2, "CascadeClassifier", lambda _path: Detector())
+    monkeypatch.setattr(reframe.cv2, "equalizeHist", lambda frame: frame)
+    monkeypatch.setattr(reframe.subprocess, "run", run)
+    monkeypatch.setattr(
+        reframe, "_detect_faces", lambda gray, *_detectors: [(20, 20, 40, 40)]
+    )
+    return capture, commands
 
+
+def test_face_tracking_extracts_samples_once_and_scales_face_coordinates(
+    monkeypatch,
+) -> None:
+    capture, commands = _mock_face_sample_extraction(monkeypatch, 1920, 1080, 3)
+    frames_seen = []
+
+    def detect_faces(gray, *_detectors):
+        frames_seen.append(int(gray[0, 0]))
+        x = 24 + len(frames_seen) * 4
+        return [(x, 20, 40, 40)]
+
+    monkeypatch.setattr(reframe, "_detect_faces", detect_faces)
     plan = analyze_face_tracking(Path("video.mp4"), 2, 1.5)
 
     assert plan.mode == "face"
     assert [center.time for center in plan.centers] == [0, 0.5, 1.0]
     assert plan.centers[0].x == pytest.approx(144)
     assert plan.centers[1].x > plan.centers[0].x
-    assert capture.released
+    assert plan.centers[0].y == pytest.approx(120)
+    assert frames_seen == [0, 1, 2]
+    assert len(commands) == 1
+    assert commands[0][commands[0].index("-vf") + 1] == (
+        "setpts=PTS-STARTPTS,fps=2,scale=640:-2"
+    )
+    assert commands[0][commands[0].index("-ss") + 1] == "2.000"
+    assert commands[0][commands[0].index("-t") + 1] == "1.500"
+    assert capture.released >= 1
 
 
 def test_one_transient_multiple_face_detection_does_not_disable_tracking(
     monkeypatch,
 ) -> None:
-    import cv2
-    import numpy as np
+    _mock_face_sample_extraction(monkeypatch, 320, 180, 6)
 
-    class Capture:
-        frame_index = 0
+    def detect_faces(gray, *_detectors):
+        if int(gray[0, 0]) == 0:
+            return [(10, 10, 30, 30), (100, 10, 30, 30)]
+        return [(10, 10, 30, 30)]
 
-        def isOpened(self):
-            return True
-
-        def get(self, prop):
-            return {
-                cv2.CAP_PROP_FRAME_WIDTH: 320,
-                cv2.CAP_PROP_FRAME_HEIGHT: 180,
-                cv2.CAP_PROP_FPS: 2,
-            }[prop]
-
-        def set(self, _prop, frame_index):
-            self.frame_index = int(frame_index)
-            return True
-
-        def read(self):
-            return True, np.zeros((180, 320, 3), dtype=np.uint8)
-
-        def release(self):
-            pass
-
-    capture = Capture()
-
-    class Detector:
-        def __init__(self, path):
-            self.name = (
-                "profile"
-                if "profileface" in path
-                else "alternate"
-                if "alt2" in path
-                else "frontal"
-            )
-            self.calls_by_frame = {}
-
-        def empty(self):
-            return False
-
-        def detectMultiScale(self, _image, **_options):
-            if self.name == "frontal":
-                return ()
-            if capture.frame_index == 0:
-                faces = np.array([[10, 10, 30, 30], [100, 10, 30, 30]])
-            else:
-                faces = np.array([[10 + capture.frame_index, 10, 30, 30]])
-            if self.name == "alternate":
-                return faces
-            calls = self.calls_by_frame.get(capture.frame_index, 0)
-            self.calls_by_frame[capture.frame_index] = calls + 1
-            if calls % 2:
-                return ()
-            return faces
-
-    monkeypatch.setattr(reframe.cv2, "VideoCapture", lambda _path: capture)
-    monkeypatch.setattr(reframe.cv2, "CascadeClassifier", Detector)
+    monkeypatch.setattr(reframe, "_detect_faces", detect_faces)
 
     plan = analyze_face_tracking(Path("video.mp4"), 0, 3)
 
@@ -222,67 +220,26 @@ def test_one_transient_multiple_face_detection_does_not_disable_tracking(
 def test_persistent_multiple_face_detections_use_blurred_background(
     monkeypatch,
 ) -> None:
-    import cv2
-    import numpy as np
-
-    class Capture:
-        frame_index = 0
-
-        def isOpened(self):
-            return True
-
-        def get(self, prop):
-            return {
-                cv2.CAP_PROP_FRAME_WIDTH: 320,
-                cv2.CAP_PROP_FRAME_HEIGHT: 180,
-                cv2.CAP_PROP_FPS: 2,
-            }[prop]
-
-        def set(self, _prop, frame_index):
-            self.frame_index = int(frame_index)
-            return True
-
-        def read(self):
-            return True, np.zeros((180, 320, 3), dtype=np.uint8)
-
-        def release(self):
-            pass
-
-    capture = Capture()
-
-    class Detector:
-        def __init__(self, path):
-            self.name = (
-                "profile"
-                if "profileface" in path
-                else "alternate"
-                if "alt2" in path
-                else "frontal"
-            )
-            self.calls_by_frame = {}
-
-        def empty(self):
-            return False
-
-        def detectMultiScale(self, _image, **_options):
-            if self.name == "frontal":
-                return ()
-            faces = np.array([[10, 10, 30, 30], [100, 10, 30, 30]])
-            if self.name == "alternate":
-                return faces
-            calls = self.calls_by_frame.get(capture.frame_index, 0)
-            self.calls_by_frame[capture.frame_index] = calls + 1
-            if calls % 2:
-                return ()
-            return faces
-
-    monkeypatch.setattr(reframe.cv2, "VideoCapture", lambda _path: capture)
-    monkeypatch.setattr(reframe.cv2, "CascadeClassifier", Detector)
+    _mock_face_sample_extraction(monkeypatch, 320, 180, 6)
+    monkeypatch.setattr(
+        reframe,
+        "_detect_faces",
+        lambda _gray, *_detectors: [(10, 10, 30, 30), (100, 10, 30, 30)],
+    )
 
     plan = analyze_face_tracking(Path("video.mp4"), 0, 3)
 
     assert plan.mode == "blur"
     assert "varias personas" in plan.fallback_reason
+
+
+def test_face_tracking_falls_back_when_ffmpeg_returns_no_frames(monkeypatch) -> None:
+    _mock_face_sample_extraction(monkeypatch, 320, 180, 0)
+
+    plan = analyze_face_tracking(Path("video.mp4"), 0, 3)
+
+    assert plan.mode == "blur"
+    assert "No se detectó una cara" in plan.fallback_reason
 
 
 def test_face_detector_ignores_unconfirmed_false_secondary_detection() -> None:
